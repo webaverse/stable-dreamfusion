@@ -16,6 +16,8 @@ if __name__ == '__main__':
     parser.add_argument('-O', action='store_true', help="equals --fp16 --cuda_ray --dir_text")
     parser.add_argument('-O2', action='store_true', help="equals --fp16 --dir_text")
     parser.add_argument('--test', action='store_true', help="test mode")
+    parser.add_argument('--save_mesh', action='store_true', help="export an obj mesh with texture")
+    parser.add_argument('--eval_interval', type=int, default=10, help="evaluate on the valid set every interval epochs")
     parser.add_argument('--workspace', type=str, default='workspace')
     parser.add_argument('--guidance', type=str, default='stable-diffusion', help='choose from [stable-diffusion, clip]')
     parser.add_argument('--seed', type=int, default=0)
@@ -26,7 +28,7 @@ if __name__ == '__main__':
     parser.add_argument('--ckpt', type=str, default='latest')
     parser.add_argument('--cuda_ray', action='store_true', help="use CUDA raymarching instead of pytorch")
     parser.add_argument('--max_steps', type=int, default=1024, help="max num steps sampled per ray (only valid when using --cuda_ray)")
-    parser.add_argument('--num_steps', type=int, default=256, help="num steps sampled per ray (only valid when not using --cuda_ray)")
+    parser.add_argument('--num_steps', type=int, default=128, help="num steps sampled per ray (only valid when not using --cuda_ray)")
     parser.add_argument('--upsample_steps', type=int, default=0, help="num steps up-sampled per ray (only valid when not using --cuda_ray)")
     parser.add_argument('--update_extra_interval', type=int, default=16, help="iter interval to update extra status (only valid when using --cuda_ray)")
     parser.add_argument('--max_ray_batch', type=int, default=4096, help="batch size of rays at inference to avoid OOM (only valid when not using --cuda_ray)")
@@ -37,7 +39,7 @@ if __name__ == '__main__':
     # network backbone
     parser.add_argument('--fp16', action='store_true', help="use amp mixed precision training")
     parser.add_argument('--backbone', type=str, default='grid', help="nerf backbone, choose from [grid, tcnn, vanilla]")
-    # rendering resolution in training
+    # rendering resolution in training, decrease this if CUDA OOM.
     parser.add_argument('--w', type=int, default=128, help="render width for NeRF in training")
     parser.add_argument('--h', type=int, default=128, help="render height for NeRF in training")
     
@@ -68,8 +70,8 @@ if __name__ == '__main__':
 
     if opt.O:
         opt.fp16 = True
-        opt.cuda_ray = True
         opt.dir_text = True
+        opt.cuda_ray = True
     elif opt.O2:
         opt.fp16 = True
         opt.dir_text = True
@@ -105,7 +107,9 @@ if __name__ == '__main__':
         else:
             test_loader = NeRFDataset(opt, device=device, type='test', H=opt.H, W=opt.W, size=100).dataloader()
             trainer.test(test_loader)
-            # trainer.save_mesh(resolution=256)
+            
+            if opt.save_mesh:
+                trainer.save_mesh(resolution=256)
     
     else:
         
@@ -126,7 +130,7 @@ if __name__ == '__main__':
         # decay to 0.01 * init_lr at last iter step
         scheduler = lambda optimizer: optim.lr_scheduler.LambdaLR(optimizer, lambda iter: 0.01 ** min(iter / opt.iters, 1))
 
-        trainer = Trainer('ngp', opt, model, guidance, device=device, workspace=opt.workspace, optimizer=optimizer, ema_decay=0.95, fp16=opt.fp16, lr_scheduler=scheduler, use_checkpoint=opt.ckpt, eval_interval=1)
+        trainer = Trainer('ngp', opt, model, guidance, device=device, workspace=opt.workspace, optimizer=optimizer, ema_decay=0.95, fp16=opt.fp16, lr_scheduler=scheduler, use_checkpoint=opt.ckpt, eval_interval=opt.eval_interval)
 
         if opt.gui:
             trainer.train_loader = train_loader # attach dataloader to trainer
@@ -143,4 +147,6 @@ if __name__ == '__main__':
             # also test
             test_loader = NeRFDataset(opt, device=device, type='test', H=opt.H, W=opt.W, size=100).dataloader()
             trainer.test(test_loader)
-            trainer.save_mesh(resolution=256)
+
+            if opt.save_mesh:
+                trainer.save_mesh(resolution=256)

@@ -4,6 +4,8 @@ A pytorch implementation of the text-to-3D model **Dreamfusion**, powered by the
 
 The original paper's project page: [_DreamFusion: Text-to-3D using 2D Diffusion_](https://dreamfusion3d.github.io/).
 
+Colab notebook for usage: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1MXT3yfOFvO0ooKEfiUUvTKwUkrrlCHpF?usp=sharing)
+
 Examples generated from text prompt `a high quality photo of a pineapple` viewed with the GUI in real time:
 
 https://user-images.githubusercontent.com/25863658/194241493-f3e68f78-aefe-479e-a4a8-001424a61b37.mp4
@@ -37,14 +39,15 @@ cd stable-dreamfusion
 ```bash
 pip install -r requirements.txt
 
+# (optional) install nvdiffrast for exporting textured mesh (--save_mesh)
+pip install git+https://github.com/NVlabs/nvdiffrast/
+
 # (optional) install the tcnn backbone if using --tcnn
 pip install git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
 
 # (optional) install CLIP guidance for the dreamfield setting
 pip install git+https://github.com/openai/CLIP.git
 
-# (optional) install nvdiffrast for exporting textured mesh
-pip install git+https://github.com/NVlabs/nvdiffrast/
 ```
 
 ### Build extension (optional)
@@ -68,19 +71,20 @@ First time running will take some time to compile the CUDA extensions.
 
 ```bash
 ### stable-dreamfusion setting
-# train with text prompt
+## train with text prompt
 # `-O` equals `--cuda_ray --fp16 --dir_text`
-python main_nerf.py --text "a hamburger" --workspace trial -O
+python main.py --text "a hamburger" --workspace trial -O
 
+## after the training is finished:
 # test (exporting 360 video, and an obj mesh with png texture)
-python main_nerf.py --text "a hamburger" --workspace trial -O --test
+python main.py --workspace trial -O --test
 
 # test with a GUI (free view control!)
-python main_nerf.py --text "a hamburger" --workspace trial -O --test --gui
+python main.py --workspace trial -O --test --gui
 
 ### dreamfields (CLIP) setting
-python main_nerf.py --text "a hamburger" --workspace trial_clip -O --guidance clip
-python main_nerf.py --text "a hamburger" --workspace trial_clip -O --test --gui --guidance clip
+python main.py --text "a hamburger" --workspace trial_clip -O --guidance clip
+python main.py --text "a hamburger" --workspace trial_clip -O --test --gui --guidance clip
 ```
 
 # Code organization & Advanced tips
@@ -104,13 +108,20 @@ latents.backward(gradient=grad, retain_graph=True)
 * Other regularizations are in `./nerf/utils.py > Trainer > train_step`. 
     * The generation seems quite sensitive to regularizations on weights_sum (alphas for each ray). The original opacity loss tends to make NeRF disappear (zero density everywhere), so we use an entropy loss to replace it for now (encourages alpha to be either 0 or 1).
 * NeRF Rendering core function: `./nerf/renderer.py > NeRFRenderer > run_cuda`.
+    * the occupancy grid based training acceleration (instant-ngp like, enabled by `--cuda_ray`) may harm the generation progress, since once a grid cell is marked as empty, rays won't pass it later...
+    * Not using `--cuda_ray` also works now:
+        ```bash
+        # `-O2` equals `--fp16 --dir_text`
+        python main.py --text "a hamburger" --workspace trial -O2 # faster training, but slower rendering
+        ```
+        Training is faster if only sample 128 points uniformly per ray (5h --> 2.5h).
+        More testing is needed...
 * Shading & normal evaluation: `./nerf/network*.py > NeRFNetwork > forward`. Current implementation harms training and is disabled.
-    * use `--albedo_iters 1000` to enable random shading mode after 1000 steps from albedo, lambertian ,and textureless
+    * use `--albedo_iters 1000` to enable random shading mode after 1000 steps from albedo, lambertian, and textureless.
     * light direction: current implementation use a plane light source, instead of a point light source...
 * View-dependent prompting: `./nerf/provider.py > get_view_direction`.
     * ues `--angle_overhead, --angle_front` to set the border. How to better divide front/back/side regions?
 * Network backbone (`./nerf/network*.py`) can be chosen by the `--backbone` option, but `tcnn` and `vanilla` are not well tested.
-    * the occupancy grid based training acceleration (instant-ngp like) may harm the generation progress, since once a grid cell is marked as empty, rays won't pass it later. 
 * Spatial density bias (gaussian density blob): `./nerf/network*.py > NeRFNetwork > gaussian`.
 
 # Acknowledgement
