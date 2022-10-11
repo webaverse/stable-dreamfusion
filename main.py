@@ -117,7 +117,7 @@ if __name__ == '__main__':
             trainer.test(test_loader)
             
             if opt.save_mesh:
-                trainer.save_mesh(resolution=32)
+                trainer.save_mesh(resolution=256)
     
     else:
         
@@ -157,4 +157,4 @@ if __name__ == '__main__':
             trainer.test(test_loader)
 
             if opt.save_mesh:
-                trainer.save_mesh(resolution=32)
+                trainer.save_mesh(resolution=256)
