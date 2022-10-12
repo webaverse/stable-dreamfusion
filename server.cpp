@@ -81,7 +81,7 @@ int main(){
 	auto commissions = make_shared<queue<guy>>();
 	auto queue_mutex = make_shared<mutex>()
 	   , train_mutex = make_shared<mutex>();
-	auto pool = make_shared<threadpool<>>(2);
+	auto pool = make_shared<threadpool<>>(avail_threads() / 2);
 	auto run = [=](const string& cmd){
 		CROW_LOG_INFO << "running \'" << cmd;
 		return exec(cmd.c_str());
