@@ -296,7 +296,10 @@ class NeRFRenderer(nn.Module):
                 fp.write(f'Ns 0.000000 \n')
                 fp.write(f'map_Kd {name}albedo.png \n')
 
+            os.system(f"blender -b -P obj2glb.py")
+
         _export(v, f)
+
 
     def run(self, rays_o, rays_d, num_steps=128, upsample_steps=128, light_d=None, ambient_ratio=1.0, shading='albedo', bg_color=None, perturb=False, **kwargs):
         # rays_o, rays_d: [B, N, 3], assumes B == 1
