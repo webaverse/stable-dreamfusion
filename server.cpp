@@ -104,7 +104,7 @@ int main(){
 		while(!commissions->empty()){
 			auto& [id, prompt] = commissions->front();
 			CROW_LOG_INFO << "Launched training for prompt: " + prompt;
-			run(string("sh train.sh \"") + strip(prompt, '\'', '\"') + "\"");
+			run(string("sh train.sh \"") + prompt + "\"");
 			CROW_LOG_INFO << run(string("sh upload.sh ") + id);
 			CROW_LOG_INFO << "Finished training for prompt: " + prompt;
 			poppe();
@@ -126,7 +126,7 @@ int main(){
 			} else {
 				CROW_LOG_INFO << prompt << " commissioned";
 				auto id = uid(prompt);
-				enqueue({id, prompt});
+				enqueue({id, strip(prompt, '\'', '\"')});
 				pool->enqueue(training_loop);
 				CROW_LOG_INFO << "Launched training loop";
 				return "Scheduled training for " + id;
