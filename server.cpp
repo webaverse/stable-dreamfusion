@@ -14,6 +14,7 @@
 #include "threadpool.h"
 #include <sstream>
 #include <chrono>
+#include <unordered_map>
 #define CROW_MAIN
 
 using std::string;
@@ -26,8 +27,15 @@ namespace fs = std::filesystem;
 namespace rv = std::ranges::views;
 
 constexpr string to_st(const auto& i){ std::stringstream ss; ss << i; return ss.str(); }
+template<typename T>
+constexpr T st_to(const string& s){
+	T t(0);
+	std::stringstream ss(s);
+	ss >> t;
+	return t;
+}
 
-static inline auto uid(const std::string& s){
+static inline string uid(const std::string& s){
 	std::stringstream ss;
 	std::hash<string> h;
 	const auto t0 = std::chrono::system_clock::now();
@@ -48,7 +56,7 @@ static inline string exec(const char* cmd) {
 	return result;
 }
 
-constexpr auto reify(const std::ranges::range auto& r){ return vector(r.begin(), r.end()); }
+constexpr auto reify(std::ranges::range auto&& r){ return vector(r.begin(), r.end()); }
 
 constexpr string strip(const string& s){ return s; }
 
@@ -118,28 +126,40 @@ int main(){
 		CROW_LOG_INFO << name << " queued with prompt: " << prompt;
 	};
 
-	CROW_ROUTE(app, "/create")
-		.methods("GET"_method, "POST"_method)([=](const crow::request& req) -> string {
-			if(auto prompt = req.url_params.get("prompt"); prompt == nullptr){
-				CROW_LOG_INFO << "No prompt specified";
-				return "Error: Can't train a NeRF without a prompt!";
-			} else {
-				CROW_LOG_INFO << prompt << " commissioned";
-				auto id = uid(prompt);
-				enqueue({id, strip(prompt, '\'', '\"')});
-				pool->enqueue(training_loop);
-				CROW_LOG_INFO << "Launched training loop";
-				return "Scheduled training for " + id;
-			}
-		});
-
-	CROW_ROUTE(app, "/list")([&](){
-		std::vector<string> fin = splitOn(exec("ls *zip"), "\n")
-						  , q = reify( q_to_v(*commissions) 
-									 | rv::transform([](const guy& i){ return i[0] + ": '" + i[1] + "'"; }));
+	CROW_ROUTE(app, "/create")([=](const crow::request& req){
 		crow::json::wvalue ret;
-		ret["pending"] = q;
+		if(auto prompt = req.url_params.get("prompt"); prompt == nullptr){
+			CROW_LOG_INFO << "No prompt specified";
+			ret["error"] = "No prompt given";
+		} else {
+			CROW_LOG_INFO << prompt << " commissioned";
+			auto id = uid(prompt);
+			enqueue({to_st(id), strip(prompt, '\'', '\"')});
+			pool->enqueue(training_loop);
+			CROW_LOG_INFO << "Launched training loop";
+			ret["id"] = id;
+		}
 		return ret;
+	});
+
+	CROW_ROUTE(app, "/list")([=](){
+		auto l = splitOn(run("sh list.sh"), "\n");
+		crow::json::wvalue ret;
+		for(int k = 0; auto& [i, p] : q_to_v(*commissions))
+			ret["pending"][k++] = {{ "id", i }, { "prompt", p}};
+		ret["finished"] = l;
+		return ret;
+	});
+
+	CROW_ROUTE(app, "/get/<string>")([=](const crow::request& req, crow::response& res, const string n){
+		if(auto l = reify( splitOn(run("sh list.sh"), "\n") | rv::filter([=](const string& s){ return s == n; })); !l.empty())
+			res.redirect(string("https://s3.us-west-2.amazonaws.com/models.webaverse.com/") + n + ".glb");
+		else if(auto q = reify( q_to_v(*commissions)
+							   | rv::filter([=](const guy& i){ return i[0] == n; })); !q.empty())
+			res.code = 209;
+		else
+			res.code = 404;
+		res.end();
 	});
 
 	app.port(80).run();
