@@ -13,6 +13,7 @@
 #include <ranges>
 #include "threadpool.h"
 #include <sstream>
+#include <chrono>
 #define CROW_MAIN
 
 using std::string;
@@ -26,7 +27,13 @@ namespace rv = std::ranges::views;
 
 constexpr string to_st(const auto& i){ std::stringstream ss; ss << i; return ss.str(); }
 
-static inline auto uid(const std::string& s){ std::hash<string> h; return to_st(h(s)); }
+static inline auto uid(const std::string& s){
+	std::stringstream ss;
+	std::hash<string> h;
+	const auto t0 = std::chrono::system_clock::now();
+	ss << s << '|' << std::chrono::duration_cast<std::chrono::nanoseconds>(t0.time_since_epoch()).count();
+	return to_st(h(ss.str()));
+}
 
 static inline string exec(const char* cmd) {
 	std::array<char, 128> buffer;
@@ -86,17 +93,6 @@ int main(){
 		return exec(cmd.c_str());
 	};
 
-	auto check_queue = [=](const string& name) -> int {
-		if(!commissions->empty()){
-			const auto v = q_to_v(*commissions);
-			if(auto pos = std::find_if( v.begin(), v.end()
-									  , [=](const guy& g){ auto& [n,d] = g; return n == name; });
-			pos != v.end())
-				return int(std::distance(v.begin(), pos));
-		}
-		return -1;
-	};
-
 	auto poppe = [=](){
 		lock_guard<mutex> qlock(*queue_mutex);
 		commissions->pop();
@@ -130,34 +126,18 @@ int main(){
 			} else {
 				CROW_LOG_INFO << prompt << " commissioned";
 				auto id = uid(prompt);
-				if(auto r = check_queue(id); r < 0){
-					enqueue({id, prompt});
-					pool->enqueue(training_loop);
-					CROW_LOG_INFO << "Launched training loop";
-					return "Scheduled training for " + id;
-				} else
-					return id + " is currently " + (r ? string("in line") : string("training"));
+				enqueue({id, prompt});
+				pool->enqueue(training_loop);
+				CROW_LOG_INFO << "Launched training loop";
+				return "Scheduled training for " + id;
 			}
 		});
 
-	CROW_ROUTE(app, "/check/<string>")([=](crow::response& res, const string& name){
-		CROW_LOG_INFO << name << " check'd";
-		if(fs::exists(fs::path(name + ".zip"))){
-			res.write("O I know that guy");
-			res.set_static_file_info(name + ".zip");
-		} else if(auto r = check_queue(name); r < 0)
-			res.write("Doesn't look like much of anything to me");
-		else
-			res.write(name + " is currently "
-						   + (r ? string("in line") : string("training")));
-		res.end();
-	});
-
 	CROW_ROUTE(app, "/list")([&](){
 		std::vector<string> fin = splitOn(exec("ls *zip"), "\n")
-						  , q = reify(q_to_v(*commissions) | rv::transform([](const guy& i){ return i[0]; }));
+						  , q = reify( q_to_v(*commissions) 
+									 | rv::transform([](const guy& i){ return i[0] + ": '" + i[1] + "'"; }));
 		crow::json::wvalue ret;
-		ret["finished"] = fin;
 		ret["pending"] = q;
 		return ret;
 	});
