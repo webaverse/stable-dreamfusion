@@ -9,11 +9,15 @@
 #include <mutex>
 #include <vector>
 #include <filesystem>
-#include <sstream>
-#define CROW_MAIN
 #include <crow.h>
 #include <ranges>
 #include "threadpool.h"
+#include <aws/core/Aws.h>
+#include <aws/s3/S3Client.h>
+#include <aws/s3/model/PutObjectRequest.h>
+#include <sstream>
+#define CROW_MAIN
+
 using std::string;
 using std::mutex;
 using std::lock_guard;
@@ -22,6 +26,11 @@ using std::queue;
 using std::vector;
 namespace fs = std::filesystem;
 namespace rv = std::ranges::views;
+
+constexpr string to_st(const auto& i){ std::stringstream ss; ss << i; return ss.str(); }
+
+static inline auto uid(const std::string& s){ std::hash<string> h; return to_st(h(s)); }
+
 static inline string exec(const char* cmd) {
 	std::array<char, 128> buffer;
 	std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
@@ -58,13 +67,10 @@ constexpr vector<string> splitOn(const string& s, const string& delim){
 	return ret;
 }
 
-static inline string reset = "rm -rf trial/checkpoints/*";
 
 static inline string train(const string& prompt){
-	return string("python main.py --cuda_ray --save_mesh --text \"") + strip(prompt, '\'', '\"') + "\" --workspace trial -O";
+	return string("python main.py --save_mesh --text \"") + strip(prompt, '\'', '\"') + "\" --workspace trial -O";
 }
-
-static inline string save(const string& name){ return string("zip ") + name + ".zip trial/mesh/*"; }
 
 template <typename T>
 constexpr auto q_to_v(queue<T> qcopy){
@@ -75,6 +81,35 @@ constexpr auto q_to_v(queue<T> qcopy){
 	return v;
 }
 
+constexpr auto stdfopts = std::ios_base::in | std::ios_base::binary;
+static inline auto awssave(){
+	auto options = make_shared<Aws::SDKOptions>();
+	Aws::InitAPI(*options);
+	Aws::Client::ClientConfiguration clientConfig;
+	std::shared_ptr<Aws::S3::S3Client> s3_client( new Aws::S3::S3Client(clientConfig)
+									  , [=](Aws::S3::S3Client* c){ 
+											Aws::ShutdownAPI(*options);
+											delete c;
+									 });
+	return [=](const std::string& id){
+		Aws::S3::Model::PutObjectRequest request;
+		request.SetBucket("models.webaverse.com");
+		request.SetKey(id);
+		if(auto in = Aws::MakeShared<Aws::FStream>("a", "model.glb", stdfopts); *in){
+			request.SetBody(in);
+			auto outcome = s3_client->PutObject(request);
+			if(outcome.IsSuccess())
+				std::cout << "Added '" << id << "' to bucket 'models.webaverse.com'\n";
+			else
+				std::cerr << "AWS S3 Error: " << outcome.GetError().GetMessage() << "\n";
+			return outcome.IsSuccess();
+		} else {
+			std::cerr << "No such file: model.glb\n";
+			return false;
+		}
+	};
+}
+
 int main(){
 	crow::SimpleApp app;
 	typedef std::array<string, 2> guy;
@@ -82,6 +117,7 @@ int main(){
 	auto queue_mutex = make_shared<mutex>()
 	   , train_mutex = make_shared<mutex>();
 	auto pool = make_shared<threadpool<>>(avail_threads() / 2);
+
 	auto run = [=](const string& cmd){
 		CROW_LOG_INFO << "running \'" << cmd;
 		return exec(cmd.c_str());
@@ -107,10 +143,13 @@ int main(){
 	auto training_loop = [=](){
 		lock_guard<mutex> lock(*train_mutex);
 		while(!commissions->empty()){
-			auto& [name, prompt] = commissions->front();
-			CROW_LOG_INFO << "Launched training for " + name;
-			run(reset), run(train(prompt)), run(save(name));
-			CROW_LOG_INFO << "Finished training for " + name;
+			auto& [id, prompt] = commissions->front();
+			CROW_LOG_INFO << "Launched training for prompt: " + prompt;
+			run("rm -rf trial/checkpoints/*");
+			run(train(prompt));
+			CROW_LOG_INFO << run("aws s3 cp model.glb s3://models.webaverse.com/" + id + ".glb");
+			run("rm model.glb");
+			CROW_LOG_INFO << "Finished training for prompt: " + prompt;
 			poppe();
 		}
 	};
@@ -123,20 +162,19 @@ int main(){
 	};
 
 	CROW_ROUTE(app, "/create/<string>")
-		.methods("GET"_method, "POST"_method)([=](const crow::request& req, const string& name){
-			CROW_LOG_INFO << name << " commissioned";
-			if(auto prompt = req.url_params.get("prompt"); prompt == nullptr){
+		.methods("GET"_method, "POST"_method)([=](const crow::request& req, const string& prompt) -> string {
+			CROW_LOG_INFO << prompt << " commissioned";
+			if(auto id = uid(prompt); prompt.empty()){
 				CROW_LOG_INFO << "No prompt specified";
-				return "Error: Can't train a NeRF for " + name + " without a prompt!";
+				return "Error: Can't train a NeRF without a prompt!";
 			} else {
-				if(auto r = check_queue(name); r < 0){
-					enqueue({name, prompt});
+				if(auto r = check_queue(id); r < 0){
+					enqueue({id, prompt});
 					pool->enqueue(training_loop);
 					CROW_LOG_INFO << "Launched training loop";
-					return "Scheduled training for " + name;
+					return "Scheduled training for " + id;
 				} else
-					return name + " is currently " 
-								+ (r ? string("in line") : string("training"));
+					return id + " is currently " + (r ? string("in line") : string("training"));
 			}
 		});
 
