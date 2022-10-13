@@ -12,9 +12,6 @@
 #include <crow.h>
 #include <ranges>
 #include "threadpool.h"
-#include <aws/core/Aws.h>
-#include <aws/s3/S3Client.h>
-#include <aws/s3/model/PutObjectRequest.h>
 #include <sstream>
 #define CROW_MAIN
 
@@ -81,35 +78,6 @@ constexpr auto q_to_v(queue<T> qcopy){
 	return v;
 }
 
-constexpr auto stdfopts = std::ios_base::in | std::ios_base::binary;
-static inline auto awssave(){
-	auto options = make_shared<Aws::SDKOptions>();
-	Aws::InitAPI(*options);
-	Aws::Client::ClientConfiguration clientConfig;
-	std::shared_ptr<Aws::S3::S3Client> s3_client( new Aws::S3::S3Client(clientConfig)
-									  , [=](Aws::S3::S3Client* c){ 
-											Aws::ShutdownAPI(*options);
-											delete c;
-									 });
-	return [=](const std::string& id){
-		Aws::S3::Model::PutObjectRequest request;
-		request.SetBucket("models.webaverse.com");
-		request.SetKey(id);
-		if(auto in = Aws::MakeShared<Aws::FStream>("a", "model.glb", stdfopts); *in){
-			request.SetBody(in);
-			auto outcome = s3_client->PutObject(request);
-			if(outcome.IsSuccess())
-				std::cout << "Added '" << id << "' to bucket 'models.webaverse.com'\n";
-			else
-				std::cerr << "AWS S3 Error: " << outcome.GetError().GetMessage() << "\n";
-			return outcome.IsSuccess();
-		} else {
-			std::cerr << "No such file: model.glb\n";
-			return false;
-		}
-	};
-}
-
 int main(){
 	crow::SimpleApp app;
 	typedef std::array<string, 2> guy;
@@ -147,7 +115,10 @@ int main(){
 			CROW_LOG_INFO << "Launched training for prompt: " + prompt;
 			run("rm -rf trial/checkpoints/*");
 			run(train(prompt));
-			CROW_LOG_INFO << run("aws s3 cp model.glb s3://models.webaverse.com/" + id + ".glb");
+			CROW_LOG_INFO << run(
+				string( "export AWS_SECRET_ACCESS_KEY=$(cat .env.local | grep AWS_SECRET | cut -d \"\"\" -f 2) ")
+					  + "&& export AWS_ACCESS_KEY=$(cat .env.local | grep AWS_ACCESS | cut -d \"\"\" -f 2) "
+					  + "&& aws s3 cp model.glb s3://models.webaverse.com/" + id + ".glb");
 			run("rm model.glb");
 			CROW_LOG_INFO << "Finished training for prompt: " + prompt;
 			poppe();
@@ -161,13 +132,14 @@ int main(){
 		CROW_LOG_INFO << name << " queued with prompt: " << prompt;
 	};
 
-	CROW_ROUTE(app, "/create/<string>")
-		.methods("GET"_method, "POST"_method)([=](const crow::request& req, const string& prompt) -> string {
-			CROW_LOG_INFO << prompt << " commissioned";
-			if(auto id = uid(prompt); prompt.empty()){
+	CROW_ROUTE(app, "/create")
+		.methods("GET"_method, "POST"_method)([=](const crow::request& req) -> string {
+			if(auto prompt = req.url_params.get("prompt"); prompt == nullptr){
 				CROW_LOG_INFO << "No prompt specified";
 				return "Error: Can't train a NeRF without a prompt!";
 			} else {
+				CROW_LOG_INFO << prompt << " commissioned";
+				auto id = uid(prompt);
 				if(auto r = check_queue(id); r < 0){
 					enqueue({id, prompt});
 					pool->enqueue(training_loop);
