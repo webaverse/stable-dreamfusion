@@ -64,11 +64,6 @@ constexpr vector<string> splitOn(const string& s, const string& delim){
 	return ret;
 }
 
-
-static inline string train(const string& prompt){
-	return string("python main.py --save_mesh --text \"") + strip(prompt, '\'', '\"') + "\" --workspace trial -O";
-}
-
 template <typename T>
 constexpr auto q_to_v(queue<T> qcopy){
 	vector<T> v;
@@ -113,13 +108,8 @@ int main(){
 		while(!commissions->empty()){
 			auto& [id, prompt] = commissions->front();
 			CROW_LOG_INFO << "Launched training for prompt: " + prompt;
-			run("rm -rf trial/checkpoints/*");
-			run(train(prompt));
-			CROW_LOG_INFO << run(
-				string( "export AWS_SECRET_ACCESS_KEY=$(cat .env.local | grep AWS_SECRET | cut -d \"\"\" -f 2) ")
-					  + "&& export AWS_ACCESS_KEY=$(cat .env.local | grep AWS_ACCESS | cut -d \"\"\" -f 2) "
-					  + "&& aws s3 cp model.glb s3://models.webaverse.com/" + id + ".glb");
-			run("rm model.glb");
+			run(string("sh train.sh \"") + strip(prompt, '\'', '\"') + "\"");
+			CROW_LOG_INFO << run(string("sh upload.sh ") + id);
 			CROW_LOG_INFO << "Finished training for prompt: " + prompt;
 			poppe();
 		}
