@@ -17,10 +17,10 @@ class StableDiffusion(nn.Module):
         try:
             with open('./TOKEN', 'r') as f:
                 self.token = f.read().replace('\n', '') # remove the last \n!
-                print(f'[INFO] successfully loaded hugging face user token!')
+                print(f'[INFO] loaded hugging face access token from ./TOKEN!')
         except FileNotFoundError as e:
-            print(e)
-            print(f'[INFO] Please first create a file called TOKEN and copy your hugging face access token into it to download stable diffusion checkpoints.')
+            self.token = True
+            print(f'[INFO] try to load hugging face access token from the default place, make sure you have run `huggingface-cli login`.')
         
         self.device = device
         self.num_train_timesteps = 1000
@@ -94,9 +94,9 @@ class StableDiffusion(nn.Module):
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-        # w(t), alpha_t * sigma_t^2
-        # w = (1 - self.alphas[t])
-        w = self.alphas[t] ** 0.5 * (1 - self.alphas[t])
+        # w(t), sigma_t^2
+        w = (1 - self.alphas[t])
+        # w = self.alphas[t] ** 0.5 * (1 - self.alphas[t])
         grad = w * (noise_pred - noise)
 
         # clip grad for stable training?

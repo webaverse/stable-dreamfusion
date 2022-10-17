@@ -195,9 +195,6 @@ class Trainer(object):
         self.scheduler_update_every_step = scheduler_update_every_step
         self.device = device if device is not None else torch.device(f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
         self.console = Console()
-
-        # text prompt
-        ref_text = self.opt.text
     
         model.to(self.device)
         if self.world_size > 1:
@@ -208,20 +205,13 @@ class Trainer(object):
         # guide model
         self.guidance = guidance
 
+        # text prompt
         if self.guidance is not None:
-            assert ref_text is not None, 'Training must provide a text prompt!'
-
+            
             for p in self.guidance.parameters():
                 p.requires_grad = False
 
-            if not self.opt.dir_text:
-                self.text_z = self.guidance.get_text_embeds([ref_text])
-            else:
-                self.text_z = []
-                for d in ['front', 'side', 'back', 'side', 'overhead', 'bottom']:
-                    text = f"{ref_text}, {d} view"
-                    text_z = self.guidance.get_text_embeds([text])
-                    self.text_z.append(text_z)
+            self.prepare_text_embeddings()
         
         else:
             self.text_z = None
@@ -257,7 +247,7 @@ class Trainer(object):
             "results": [], # metrics[0], or valid_loss
             "checkpoints": [], # record path of saved ckpt, to automatically remove old ckpt
             "best_result": None,
-            }
+        }
 
         # auto fix
         if len(metrics) == 0 or self.use_loss_as_metric:
@@ -297,6 +287,23 @@ class Trainer(object):
                 self.log(f"[INFO] Loading {self.use_checkpoint} ...")
                 self.load_checkpoint(self.use_checkpoint)
 
+    # calculate the text embs.
+    def prepare_text_embeddings(self):
+
+        if self.opt.text is None:
+            self.log(f"[WARN] text prompt is not provided.")
+            self.text_z = None
+            return
+
+        if not self.opt.dir_text:
+            self.text_z = self.guidance.get_text_embeds([self.opt.text])
+        else:
+            self.text_z = []
+            for d in ['front', 'side', 'back', 'side', 'overhead', 'bottom']:
+                text = f"{self.opt.text}, {d} view"
+                text_z = self.guidance.get_text_embeds([text])
+                self.text_z.append(text_z)
+
     def __del__(self):
         if self.log_ptr: 
             self.log_ptr.close()
@@ -330,11 +337,11 @@ class Trainer(object):
             if rand > 0.8: 
                 shading = 'albedo'
                 ambient_ratio = 1.0
-            elif rand > 0.4: 
-                shading = 'lambertian'
-                ambient_ratio = 0.1
+            # elif rand > 0.4: 
+            #     shading = 'textureless'
+            #     ambient_ratio = 0.1
             else: 
-                shading = 'textureless'
+                shading = 'lambertian'
                 ambient_ratio = 0.1
 
         # _t = time.time()
@@ -342,6 +349,9 @@ class Trainer(object):
         outputs = self.model.render(rays_o, rays_d, staged=False, perturb=True, bg_color=bg_color, ambient_ratio=ambient_ratio, shading=shading, force_all_rays=True, **vars(self.opt))
         pred_rgb = outputs['image'].reshape(B, H, W, 3).permute(0, 3, 1, 2).contiguous() # [1, 3, H, W]
         # torch.cuda.synchronize(); print(f'[TIME] nerf render {time.time() - _t:.4f}s')
+        
+        # print(shading)
+        # torch_vis_2d(pred_rgb[0])
         
         # text embeddings
         if self.opt.dir_text:
@@ -352,22 +362,24 @@ class Trainer(object):
         
         # encode pred_rgb to latents
         # _t = time.time()
-        loss_guidance = self.guidance.train_step(text_z, pred_rgb)
+        loss = self.guidance.train_step(text_z, pred_rgb)
         # torch.cuda.synchronize(); print(f'[TIME] total guiding {time.time() - _t:.4f}s')
 
         # occupancy loss
         pred_ws = outputs['weights_sum'].reshape(B, 1, H, W)
-        # mask_ws = outputs['mask'].reshape(B, 1, H, W) # near < far
 
-        # loss_ws = (pred_ws ** 2 + 0.01).sqrt().mean()
+        if self.opt.lambda_opacity > 0:
+            loss_opacity = (pred_ws ** 2).mean()
+            loss = loss + self.opt.lambda_opacity * loss_opacity
 
-        alphas = (pred_ws).clamp(1e-5, 1 - 1e-5)
-        # alphas = alphas ** 2 # skewed entropy, favors 0 over 1
-        loss_entropy = (- alphas * torch.log2(alphas) - (1 - alphas) * torch.log2(1 - alphas)).mean()
-                
-        loss = loss_guidance + self.opt.lambda_entropy * loss_entropy
+        if self.opt.lambda_entropy > 0:
+            alphas = (pred_ws).clamp(1e-5, 1 - 1e-5)
+            # alphas = alphas ** 2 # skewed entropy, favors 0 over 1
+            loss_entropy = (- alphas * torch.log2(alphas) - (1 - alphas) * torch.log2(1 - alphas)).mean()
+                    
+            loss = loss + self.opt.lambda_entropy * loss_entropy
 
-        if 'loss_orient' in outputs:
+        if self.opt.lambda_orient > 0 and 'loss_orient' in outputs:
             loss_orient = outputs['loss_orient']
             loss = loss + self.opt.lambda_orient * loss_orient
             
@@ -442,6 +454,9 @@ class Trainer(object):
     ### ------------------------------
 
     def train(self, train_loader, valid_loader, max_epochs):
+
+        assert self.text_z is not None, 'Training must provide a text prompt!'
+
         if self.use_tensorboardX and self.local_rank == 0:
             self.writer = tensorboardX.SummaryWriter(os.path.join(self.workspace, "run", self.name))
 

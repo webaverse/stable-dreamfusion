@@ -23,16 +23,16 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=0)
 
     ### training options
-    parser.add_argument('--iters', type=int, default=15000, help="training iters")
+    parser.add_argument('--iters', type=int, default=10000, help="training iters")
     parser.add_argument('--lr', type=float, default=1e-3, help="initial learning rate")
     parser.add_argument('--ckpt', type=str, default='latest')
     parser.add_argument('--cuda_ray', action='store_true', help="use CUDA raymarching instead of pytorch")
     parser.add_argument('--max_steps', type=int, default=1024, help="max num steps sampled per ray (only valid when using --cuda_ray)")
-    parser.add_argument('--num_steps', type=int, default=128, help="num steps sampled per ray (only valid when not using --cuda_ray)")
-    parser.add_argument('--upsample_steps', type=int, default=0, help="num steps up-sampled per ray (only valid when not using --cuda_ray)")
+    parser.add_argument('--num_steps', type=int, default=64, help="num steps sampled per ray (only valid when not using --cuda_ray)")
+    parser.add_argument('--upsample_steps', type=int, default=64, help="num steps up-sampled per ray (only valid when not using --cuda_ray)")
     parser.add_argument('--update_extra_interval', type=int, default=16, help="iter interval to update extra status (only valid when using --cuda_ray)")
     parser.add_argument('--max_ray_batch', type=int, default=4096, help="batch size of rays at inference to avoid OOM (only valid when not using --cuda_ray)")
-    parser.add_argument('--albedo_iters', type=int, default=15000, help="training iters that only use albedo shading")
+    parser.add_argument('--albedo_iters', type=int, default=1000, help="training iters that only use albedo shading")
     # model options
     parser.add_argument('--bg_radius', type=float, default=1.4, help="if positive, use a background model at sphere(bg_radius)")
     parser.add_argument('--density_thresh', type=float, default=10, help="threshold for density grid to be occupied")
@@ -40,8 +40,9 @@ if __name__ == '__main__':
     parser.add_argument('--fp16', action='store_true', help="use amp mixed precision training")
     parser.add_argument('--backbone', type=str, default='grid', help="nerf backbone, choose from [grid, tcnn, vanilla]")
     # rendering resolution in training, decrease this if CUDA OOM.
-    parser.add_argument('--w', type=int, default=128, help="render width for NeRF in training")
-    parser.add_argument('--h', type=int, default=128, help="render height for NeRF in training")
+    parser.add_argument('--w', type=int, default=64, help="render width for NeRF in training")
+    parser.add_argument('--h', type=int, default=64, help="render height for NeRF in training")
+    parser.add_argument('--jitter_pose', action='store_true', help="add jitters to the randomly sampled camera poses")
     
     ### dataset options
     parser.add_argument('--bound', type=float, default=1, help="assume the scene is bounded in box(-bound, bound)")
@@ -51,9 +52,10 @@ if __name__ == '__main__':
     parser.add_argument('--fovy_range', type=float, nargs='*', default=[40, 70], help="training camera fovy range")
     parser.add_argument('--dir_text', action='store_true', help="direction-encode the text prompt, by appending front/side/back/overhead view")
     parser.add_argument('--angle_overhead', type=float, default=30, help="[0, angle_overhead] is the overhead region")
-    parser.add_argument('--angle_front', type=float, default=30, help="[0, angle_front] is the front region, [180, 180+angle_front] the back region, otherwise the side region.")
+    parser.add_argument('--angle_front', type=float, default=60, help="[0, angle_front] is the front region, [180, 180+angle_front] the back region, otherwise the side region.")
 
     parser.add_argument('--lambda_entropy', type=float, default=1e-4, help="loss scale for alpha entropy")
+    parser.add_argument('--lambda_opacity', type=float, default=0, help="loss scale for alpha value")
     parser.add_argument('--lambda_orient', type=float, default=1e-2, help="loss scale for orientation")
 
     ### GUI options
@@ -71,10 +73,16 @@ if __name__ == '__main__':
     if opt.O:
         opt.fp16 = True
         opt.dir_text = True
+        # use occupancy grid to prune ray sampling, faster rendering.
         opt.cuda_ray = True
+        # opt.lambda_entropy = 1e-4
+        # opt.lambda_opacity = 0
+
     elif opt.O2:
         opt.fp16 = True
         opt.dir_text = True
+        opt.lambda_entropy = 1e-4 # necessary to keep non-empty
+        opt.lambda_opacity = 3e-3 # no occupancy grid, so use a stronger opacity loss.
 
     if opt.backbone == 'vanilla':
         from nerf.network import NeRFNetwork
@@ -98,7 +106,7 @@ if __name__ == '__main__':
     if opt.test:
         guidance = None # no need to load guidance model at test
 
-        trainer = Trainer('ngp', opt, model, guidance, device=device, workspace=opt.workspace, fp16=opt.fp16, use_checkpoint=opt.ckpt)
+        trainer = Trainer('df', opt, model, guidance, device=device, workspace=opt.workspace, fp16=opt.fp16, use_checkpoint=opt.ckpt)
 
         if opt.gui:
             gui = NeRFGUI(opt, trainer)
@@ -127,10 +135,10 @@ if __name__ == '__main__':
 
         train_loader = NeRFDataset(opt, device=device, type='train', H=opt.h, W=opt.w, size=100).dataloader()
 
-        # decay to 0.01 * init_lr at last iter step
-        scheduler = lambda optimizer: optim.lr_scheduler.LambdaLR(optimizer, lambda iter: 0.01 ** min(iter / opt.iters, 1))
+        scheduler = lambda optimizer: optim.lr_scheduler.LambdaLR(optimizer, lambda iter: 0.1 ** min(iter / opt.iters, 1))
+        # scheduler = lambda optimizer: optim.lr_scheduler.OneCycleLR(optimizer, max_lr=opt.lr, total_steps=opt.iters, pct_start=0.1)
 
-        trainer = Trainer('ngp', opt, model, guidance, device=device, workspace=opt.workspace, optimizer=optimizer, ema_decay=0.95, fp16=opt.fp16, lr_scheduler=scheduler, use_checkpoint=opt.ckpt, eval_interval=opt.eval_interval)
+        trainer = Trainer('df', opt, model, guidance, device=device, workspace=opt.workspace, optimizer=optimizer, ema_decay=None, fp16=opt.fp16, lr_scheduler=scheduler, use_checkpoint=opt.ckpt, eval_interval=opt.eval_interval, scheduler_update_every_step=True)
 
         if opt.gui:
             trainer.train_loader = train_loader # attach dataloader to trainer

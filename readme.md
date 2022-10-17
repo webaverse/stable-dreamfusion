@@ -17,13 +17,13 @@ This project is a **work-in-progress**, and contains lots of differences from th
 
 
 ## Notable differences from the paper
-* Since the Imagen model is not publicly available, we use [Stable Diffusion](https://github.com/CompVis/stable-diffusion) to replace it (implementation from [diffusers](https://github.com/huggingface/diffusers)). Different from Imagen, Stable-Diffusion is a latent diffusion model, which diffuses in a latent space instead of the original image space. Therefore, we need the loss to propagate back from the VAE's encoder part too, which introduces extra time cost in training. Currently, 15000 training steps take about 5 hours to train on a V100.
+* Since the Imagen model is not publicly available, we use [Stable Diffusion](https://github.com/CompVis/stable-diffusion) to replace it (implementation from [diffusers](https://github.com/huggingface/diffusers)). Different from Imagen, Stable-Diffusion is a latent diffusion model, which diffuses in a latent space instead of the original image space. Therefore, we need the loss to propagate back from the VAE's encoder part too, which introduces extra time cost in training. Currently, 10000 training steps take about 3 hours to train on a V100.
 * We use the [multi-resolution grid encoder](https://github.com/NVlabs/instant-ngp/) to implement the NeRF backbone (implementation from [torch-ngp](https://github.com/ashawkey/torch-ngp)), which enables much faster rendering (~10FPS at 800x800).
 * We use the Adam optimizer with a larger initial learning rate.
 
 
 ## TODOs
-* The normal evaluation & shading part.
+* Alleviate the multi-face [Janus problem](https://twitter.com/poolio/status/1578045212236034048).
 * Better mesh (improve the surface quality). 
 
 # Install
@@ -33,7 +33,9 @@ git clone https://github.com/ashawkey/stable-dreamfusion.git
 cd stable-dreamfusion
 ```
 
-**Important**: To download the Stable Diffusion model checkpoint, you should create a file called `TOKEN` under this directory (i.e., `stable-dreamfusion/TOKEN`) and copy your hugging face [access token](https://huggingface.co/docs/hub/security-tokens) into it.
+**Important**: To download the Stable Diffusion model checkpoint, you should provide your [access token](https://huggingface.co/settings/tokens). You could choose either of the following ways:
+* Run `huggingface-cli login` and enter your token.
+* Create a file called `TOKEN` under this directory (i.e., `stable-dreamfusion/TOKEN`) and copy your token into it.
 
 ### Install with pip
 ```bash
@@ -71,14 +73,30 @@ First time running will take some time to compile the CUDA extensions.
 
 ```bash
 ### stable-dreamfusion setting
-## train with text prompt
+## train with text prompt (with the default settings)
 # `-O` equals `--cuda_ray --fp16 --dir_text`
+# `--cuda_ray` enables instant-ngp-like occupancy grid based acceleration.
+# `--fp16` enables half-precision training.
+# `--dir_text` enables view-dependent prompting.
 python main.py --text "a hamburger" --workspace trial -O
 
-## after the training is finished:
-# test (exporting 360 video, and an obj mesh with png texture)
-python main.py --workspace trial -O --test
+# if the above command fails to generate things (learns an empty scene), maybe try:
+# 1. disable random lambertian shading, simply use albedo as color:
+python main.py --text "a hamburger" --workspace trial -O --albedo_iters 10000 # i.e., set --albedo_iters >= --iters, which is default to 10000
+# 2. use a smaller density regularization weight:
+python main.py --text "a hamburger" --workspace trial -O --lambda_entropy 1e-5
 
+# you can also train in a GUI to visualize the training progress:
+python main.py --text "a hamburger" --workspace trial -O --gui
+
+# A Gradio GUI is also possible (with less options):
+python gradio_app.py # open in web browser
+
+## after the training is finished:
+# test (exporting 360 video)
+python main.py --workspace trial -O --test
+# also save a mesh (with obj, mtl, and png texture)
+python main.py --workspace trial -O --test --save_mesh
 # test with a GUI (free view control!)
 python main.py --workspace trial -O --test --gui
 
@@ -101,7 +119,7 @@ pred_rgb_512 = F.interpolate(pred_rgb, (512, 512), mode='bilinear', align_corner
 latents = self.encode_imgs(pred_rgb_512)
 ... # timestep sampling, noise adding and UNet noise predicting
 # 3. the SDS loss, since UNet part is ignored and cannot simply audodiff, we manually set the grad for latents.
-w = (1 - self.scheduler.alphas_cumprod[t]).to(self.device)
+w = self.alphas[t] ** 0.5 * (1 - self.alphas[t])
 grad = w * (noise_pred - noise)
 latents.backward(gradient=grad, retain_graph=True)
 ```
@@ -117,7 +135,6 @@ latents.backward(gradient=grad, retain_graph=True)
         Training is faster if only sample 128 points uniformly per ray (5h --> 2.5h).
         More testing is needed...
 * Shading & normal evaluation: `./nerf/network*.py > NeRFNetwork > forward`. Current implementation harms training and is disabled.
-    * use `--albedo_iters 1000` to enable random shading mode after 1000 steps from albedo, lambertian, and textureless.
     * light direction: current implementation use a plane light source, instead of a point light source...
 * View-dependent prompting: `./nerf/provider.py > get_view_direction`.
     * ues `--angle_overhead, --angle_front` to set the border. How to better divide front/back/side regions?
