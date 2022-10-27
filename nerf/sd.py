@@ -7,6 +7,7 @@ logging.set_verbosity_error()
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from .tomepatch import apply_patch
 
 import time
 
@@ -44,6 +45,8 @@ class StableDiffusion(nn.Module):
 
         # 3. The UNet model for generating the latents.
         self.unet = UNet2DConditionModel.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="unet", use_auth_token=self.token).to(self.device)
+        apply_patch(self.unet)
+        self.unet.r = 2048
 
         # 4. Create a scheduler for inference
         self.scheduler = PNDMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=self.num_train_timesteps)
