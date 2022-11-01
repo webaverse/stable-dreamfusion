@@ -10,6 +10,7 @@ tqdm
 matplotlib
 PyMCubes
 rich
+einops
 dearpygui
 scipy
 huggingface_hub
